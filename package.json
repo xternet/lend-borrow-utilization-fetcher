@@ -1,0 +1,39 @@
+{
+	"name": "lend-borrow-utilization-fetcher",
+	"version": "1.0.0",
+	"description": "Fetching utilization rates from Aave and Compound using subgraphs",
+	"type": "module",
+	"scripts": {
+		"fetch-data": "bun run src/fetch-data.ts",
+		"tar-data": "tar -czvf $(date +\"%Y-%m-%d\")-utilization-rates.tar.gz ./data/utilization-rates",
+		"build": "tsc"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	},
+	"peerDependencies": {
+		"typescript": "^5.0.0"
+	},
+	"dependencies": {
+		"graphql-request": "^7.1.0"
+	},
+	"author": "github.com/xternet",
+	"license": "MIT",
+	"keywords": [
+		"DeFi",
+		"lending",
+		"borrowing",
+		"utilization",
+		"Aave",
+		"Compound",
+		"typescript",
+		"csv",
+		"graphql",
+		"subgraphs",
+		"thegraph"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/xternet/lend-borrow-utilization-fetcher.git"
+	}
+}
