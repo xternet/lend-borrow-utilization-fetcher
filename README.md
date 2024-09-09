@@ -24,7 +24,7 @@ If you'd like to skip the fetching process, you can download the pre-fetched 202
 
 1. **Download the data from GitHub and extract it into the `./data/` directory:**
    ```bash
-   wget https://github.com/xternet/lend-borrow-utilization-fetcher/releases/download/data-download/2024-09-10-utilization-rates.tar.gz && tar -xzvf 2024-09-10-utilization-rates.tar.gz -C ./data/
+   wget https://github.com/xternet/lend-borrow-utilization-fetcher/releases/download/data-download/2024-09-10-utilization-rates.tar.gz && mkdir ./data && tar -xzvf 2024-09-10-utilization-rates.tar.gz -C ./data/
    ```
 
 ### Python Script Setup
