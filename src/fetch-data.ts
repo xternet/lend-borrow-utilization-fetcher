@@ -286,11 +286,12 @@ async function retryRequest(
 					setTimeout(() => reject(new Error("Request timed out")), timeout)
 				), // Timeout after 10 seconds
 			]);
+
 			return result;
 		} catch (error) {
 			console.warn(
-				`Request attempt ${i + 1}/${retries} failed, endpoint ${endpoint}`,
-				error
+				`Request attempt ${i + 1}/${retries} failed, endpoint ${endpoint}, err msg:`,
+				error.message
 			);
 
 			// If this was the last retry, return an empty array
@@ -307,11 +308,12 @@ async function fetchDataFromAave(
 	endpoint: string,
 	symbol: string,
 	skip: number,
-	limit: number
+	limit: number,
+	lastTimestamp: number
 ) {
 	const query = `{
     reserveParamsHistoryItems(
-      where: {reserve_: {symbol: "${symbol}"}, utilizationRate_gt: "0"}
+      where: {reserve_: {symbol: "${symbol}"}, utilizationRate_gt: "0", timestamp_gt: ${lastTimestamp}},
       orderBy: timestamp
       orderDirection: asc
       skip: ${skip}
@@ -328,6 +330,43 @@ async function fetchDataFromAave(
 			(data) => data.reserveParamsHistoryItems || []
 		)
 	);
+}
+
+async function getLatestTimestamp(
+	filePath: string,
+	logInfo: string,
+	symbol: string
+): Promise<number> {
+	// If the CSV file exists, remove it before appending new data
+	if (fs.existsSync(filePath)) {
+		const lastEntryTimestamp = fs
+			.readFileSync(filePath, "utf-8")
+			.split("\n")
+			.slice(-2)[0]
+			.split(",")[0];
+
+		console.log(
+			`Detected latest date: ${new Date(lastEntryTimestamp * 1000).toISOString()} for ${logInfo} ${symbol}, continuing fetching data from there...`
+		);
+
+		if (
+			typeof lastEntryTimestamp === "string" &&
+			lastEntryTimestamp.length === 10
+		) {
+			return parseInt(lastEntryTimestamp);
+		} else {
+			console.log(
+				`Invalid or missing timestamp: ${lastEntryTimestamp} for ${logInfo} ${symbol}. Consider fixing or deleting file. Exiting...`
+			);
+			process.exit(1);
+			return 0; // Reset timestamp if invalid
+		}
+	} else {
+		console.log(
+			`No file found for ${logInfo} ${symbol}, starting from scratch...`
+		);
+		return 0;
+	}
 }
 
 async function fetchAndSaveDataForAave({
@@ -353,19 +392,21 @@ async function fetchAndSaveDataForAave({
 			const csvFilename = `${csvFilenamePrefix}-${symbol}.csv`;
 			const filePath = path.join(__dirname, csvFilename);
 
-			// If the CSV file exists, remove it before appending new data
-			if (fs.existsSync(filePath)) {
-				console.log(
-					`File ${filePath} exists. Removing it before appending new data.`
-				);
-				fs.unlinkSync(filePath);
-			}
+			let lastTimestamp = await getLatestTimestamp(filePath, logInfo, symbol);
 
 			while (true) {
 				// console.log(
 				// 	`Fetching for ${logInfo}: ${symbol} from: ${skip} to: ${skip + limit}...`
 				// );
-				result = await fetchFunction(endpoint, symbol, skip, limit);
+
+				// TODO provide timestamp from
+				result = await fetchFunction(
+					endpoint,
+					symbol,
+					skip,
+					limit,
+					lastTimestamp
+				);
 				if (!result || result.length === 0) {
 					console.log(`No data found for ${symbol}`);
 					break;
@@ -376,6 +417,7 @@ async function fetchAndSaveDataForAave({
 					.map((item) => `${item.timestamp},${item.utilizationRate}`)
 					.join("\n");
 
+				lastTimestamp = parseInt(result[result.length - 1].timestamp);
 				// If data exists, mark that data was found
 				if (csvData) {
 					hasData = true;
@@ -525,15 +567,14 @@ async function fetchDataFromCompound(
 	marketId: string,
 	skip: number,
 	limit: number,
-	maxRetries: number = 3, // Set a default maximum number of retries
-	retryDelay: number = 1000 // Set a default delay between retries in milliseconds
+	lastTimestamp: number
 ) {
 	const query = `query MyQuery {
 		marketHourlySnapshots(
 			first: ${limit}
 			orderBy: timestamp
 			orderDirection: asc
-			where: {totalDepositBalanceUSD_not: "0", totalBorrowBalanceUSD_not: "0", market: "${marketId}"}
+			where: {totalDepositBalanceUSD_not: "0", totalBorrowBalanceUSD_not: "0", market: "${marketId}", timestamp_gt: ${lastTimestamp}}
 			skip: ${skip}
 		) {
 			timestamp
@@ -542,33 +583,9 @@ async function fetchDataFromCompound(
 		}
 	}`;
 
-	let attempt = 0;
-
-	while (attempt < maxRetries) {
-		try {
-			const data = await request(endpoint, query);
-
-			if (!data || !data.marketHourlySnapshots) {
-				throw new Error("No data found");
-			}
-
-			return data.marketHourlySnapshots;
-		} catch (error) {
-			attempt++;
-			console.error(
-				`Attempt ${attempt} failed for ${marketId}, endpoint ${endpoint}. Error:`,
-				error
-			);
-
-			if (attempt >= maxRetries) {
-				console.error(`Max retries reached for ${marketId}. Returning null.`);
-				return null; // Return null if maximum retries are reached
-			}
-
-			// Wait for the retry delay before the next attempt
-			await new Promise((resolve) => setTimeout(resolve, retryDelay * attempt));
-		}
-	}
+	return retryRequest(endpoint, () =>
+		request(endpoint, query).then((data) => data.marketHourlySnapshots || [])
+	);
 }
 
 async function fetchAndSaveCompoundData({
@@ -599,19 +616,24 @@ async function fetchAndSaveCompoundData({
 			const filePath = path.join(__dirname, csvFilename);
 
 			// If the CSV file exists, remove it before appending new data
-			if (fs.existsSync(filePath)) {
-				console.log(
-					`File ${filePath} exists. Removing it before appending new data.`
-				);
-				fs.unlinkSync(filePath);
-			}
+			let lastTimestamp = await getLatestTimestamp(
+				filePath,
+				logInfo,
+				market.inputToken.symbol
+			);
 
 			// Fetch data in batches using the skip and limit logic
 			while (true) {
 				// console.log(
 				// 	`Fetching for ${logInfo}: ${market.inputToken.symbol} from: ${skip} to: ${skip + limit}...`
 				// );
-				result = await fetchFunction(endpoint, market.id, skip, limit);
+				result = await fetchFunction(
+					endpoint,
+					market.id,
+					skip,
+					limit,
+					lastTimestamp
+				);
 				if (!result || result.length === 0) {
 					console.log(
 						`No data found for ${market.inputToken.symbol}, endpoint ${endpoint}`
@@ -625,6 +647,8 @@ async function fetchAndSaveCompoundData({
 						return `${item.timestamp},${item.totalBorrowBalanceUSD / item.totalDepositBalanceUSD}`;
 					})
 					.join("\n");
+
+				lastTimestamp = parseInt(result[result.length - 1].timestamp);
 
 				// If data exists, mark that data was found
 				if (csvData) {
@@ -683,10 +707,10 @@ async function fetchAndSaveCompoundData({
 
 	/// split execution as needed to avoid rate limiting
 	await Promise.all([
-		// // aave v2...
+		// aave v2...
 		getRatesForAaveV2Mainnet(),
-		getRatesForAaveV2Avalanche(),
 
+		getRatesForAaveV2Avalanche(),
 		// // aave v3...
 		getRatesForAaveV3Mainnet(),
 		getRatesForAaveV3Polygon(),
@@ -696,15 +720,12 @@ async function fetchAndSaveCompoundData({
 		getRatesForAaveV3Bnb(),
 		getRatesForAaveV3Fantom(),
 		getRatesForAaveV3Gnosis(),
-
 		getRatesForAaveV3Lido(),
 		getRatesForAaveV3Optimism(),
 		getRatesForAaveV3Scroll(),
 		getRatesForAaveV3ZKsync(),
-
 		// // compound v2...
 		getRatesForCompoundV2Mainnet(),
-
 		// // compound v3...
 		getRatesForCompoundV3Mainnet(),
 		getRatesForCompoundV3Arbitrum(),
