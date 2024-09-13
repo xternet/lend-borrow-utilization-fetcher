@@ -252,10 +252,23 @@ async function getRatesForAaveV3ZKsync() {
 
 async function getSymbolsAave(endpoint: string) {
 	const query = `{
-		reserves {
-			symbol
-		}
-	}`;
+    reserves(where: {utilizationRate_gt: "0"}) {
+      symbol
+    }
+  }`;
+	// let query = `{
+	// 	reserves {
+	// 		symbol
+	// 	}
+	// }`;
+
+	// if ((optimize = true)) {
+	// 	query = `{
+	//     reserves(where: {utilizationRate_gt: "0"}) {
+	//       symbol
+	//     }
+	//   }`;
+	// }
 
 	try {
 		const data = await request(endpoint, query);
@@ -376,88 +389,99 @@ async function fetchAndSaveDataForAave({
 	logInfo,
 	fetchFunction,
 	csvHeader = "timestamp,utilizationRate\n",
+	batchSize = 10,
 	limit = 1_000,
 }) {
 	const timeStartTotal = performance.now();
 
-	await Promise.all(
-		symbols.map(async (symbol) => {
-			console.log(`\nFetching data for ${logInfo} ${symbol}...`);
+	for (let i = 0; i < symbols.length; i += batchSize) {
+		const batch = symbols.slice(i, i + batchSize);
+		console.log(
+			`\n\x1b[33mCollecting batch of 10x of ${batch.length} for ${logInfo}, symbols: ${batch.join(", ")}...\x1b[0m`
+		);
 
-			let result = null;
-			let skip = 0;
-			let hasData = false;
-			const timeStartToken = performance.now();
+		await Promise.all(
+			batch.map(async (symbol) => {
+				console.log(`\nFetching data for ${logInfo} ${symbol}...`);
 
-			const csvFilename = `${csvFilenamePrefix}-${symbol}.csv`;
-			const filePath = path.join(__dirname, csvFilename);
+				let result = null;
+				let skip = 0;
+				let hasData = false;
+				const timeStartToken = performance.now();
 
-			let lastTimestamp = await getLatestTimestamp(filePath, logInfo, symbol);
+				const csvFilename = `${csvFilenamePrefix}-${symbol}.csv`;
+				const filePath = path.join(__dirname, csvFilename);
 
-			while (true) {
-				// console.log(
-				// 	`Fetching for ${logInfo}: ${symbol} from: ${skip} to: ${skip + limit}...`
-				// );
+				let lastTimestamp = await getLatestTimestamp(filePath, logInfo, symbol);
 
-				// TODO provide timestamp from
-				result = await fetchFunction(
-					endpoint,
-					symbol,
-					skip,
-					limit,
-					lastTimestamp
-				);
-				if (!result || result.length === 0) {
-					console.log(`No data found for ${symbol}`);
-					break;
-				}
-
-				// Map the results to CSV rows
-				const csvData = result
-					.map((item) => `${item.timestamp},${item.utilizationRate}`)
-					.join("\n");
-
-				lastTimestamp = parseInt(result[result.length - 1].timestamp);
-				// If data exists, mark that data was found
-				if (csvData) {
-					hasData = true;
-
-					// Ensure the directory exists
-					const dirPath = path.dirname(filePath);
-					if (!fs.existsSync(dirPath)) {
-						fs.mkdirSync(dirPath, {recursive: true});
+				while (true) {
+					result = await fetchFunction(
+						endpoint,
+						symbol,
+						skip,
+						limit,
+						lastTimestamp
+					);
+					if (!result || result.length === 0) {
+						console.log(`No data found for ${symbol}`);
+						break;
 					}
 
-					// Write CSV header if the file doesn't exist
-					if (!fs.existsSync(filePath)) {
-						fs.writeFileSync(filePath, csvHeader);
+					// Map the results to CSV rows
+					const csvData = result
+						.map((item) => `${item.timestamp},${item.utilizationRate}`)
+						.join("\n");
+
+					lastTimestamp = parseInt(result[result.length - 1].timestamp);
+					// If data exists, mark that data was found
+					if (csvData) {
+						hasData = true;
+
+						// Ensure the directory exists
+						const dirPath = path.dirname(filePath);
+						if (!fs.existsSync(dirPath)) {
+							fs.mkdirSync(dirPath, {recursive: true});
+						}
+
+						// Write CSV header if the file doesn't exist
+						if (!fs.existsSync(filePath)) {
+							fs.writeFileSync(filePath, csvHeader);
+						}
+
+						// Append the new data to the CSV file
+						fs.appendFileSync(filePath, csvData + "\n");
 					}
 
-					// Append the new data to the CSV file
-					fs.appendFileSync(filePath, csvData + "\n");
+					skip += limit;
+
+					if (result.length < limit) {
+						break;
+					}
 				}
 
-				skip += limit;
-
-				if (result.length < limit) {
-					break;
+				if (hasData) {
+					console.log(
+						`Completed fetching data for ${logInfo} ${symbol} in`,
+						(performance.now() - timeStartToken) / 1_000,
+						"seconds"
+					);
+				} else {
+					console.log(
+						`No data saved for ${symbol} as no valid data was found.`
+					);
 				}
-			}
+			})
+		);
 
-			if (hasData) {
-				console.log(
-					`Completed fetching data for ${logInfo} ${symbol} in`,
-					(performance.now() - timeStartToken) / 1_000,
-					"seconds"
-				);
-			} else {
-				console.log(`No data saved for ${symbol} as no valid data was found.`);
-			}
-		})
-	);
+		// wait 1s
+		console.log(
+			`\n\x1b[33mCompleted fetching data for ${logInfo}, waiting 1 second before the next batch...\x1b[0m`
+		);
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
 
 	console.log(
-		`\x1b[32mCompleted fetching data for all ${logInfo} reserves in`,
+		`\x1b[32mCompleted fetching data for all ${logInfo} reserves in\x1b[0m`,
 		(performance.now() - timeStartTotal) / 1_000,
 		"seconds"
 	);
@@ -595,105 +619,113 @@ async function fetchAndSaveCompoundData({
 	logInfo,
 	fetchFunction,
 	csvHeader = "timestamp,utilizationRate\n",
+	batchSize = 10,
 	limit = 1_000,
 }) {
 	const timeStartTotal = performance.now();
 
-	// Iterate over all the markets to fetch data
-	await Promise.all(
-		markets.map(async (market) => {
-			console.log(
-				`\nFetching data for ${logInfo} ${market.inputToken.symbol}...`
-			);
+	for (let i = 0; i < markets.length; i += batchSize) {
+		const batch = markets.slice(i, i + batchSize);
+		console.log(
+			`\n\x1b[33mCollecting batch of ${batch.length} markets for ${logInfo}: ${batch.map((m) => m.inputToken.symbol).join(", ")}\x1b[0m`
+		);
 
-			let result = null;
-			let skip = 0;
-			let hasData = false;
-			const timeStartToken = performance.now();
+		await Promise.all(
+			batch.map(async (market) => {
+				const symbol = market.inputToken.symbol;
+				console.log(`\nFetching data for ${logInfo} ${symbol}...`);
 
-			// Define the file path
-			const csvFilename = `${csvFilenamePrefix}-${market.inputToken.symbol}.csv`;
-			const filePath = path.join(__dirname, csvFilename);
+				let result = null;
+				let skip = 0;
+				let hasData = false;
+				const timeStartToken = performance.now();
 
-			// If the CSV file exists, remove it before appending new data
-			let lastTimestamp = await getLatestTimestamp(
-				filePath,
-				logInfo,
-				market.inputToken.symbol
-			);
+				// Define the file path
+				const csvFilename = `${csvFilenamePrefix}-${symbol}.csv`;
+				const filePath = path.join(__dirname, csvFilename);
 
-			// Fetch data in batches using the skip and limit logic
-			while (true) {
-				// console.log(
-				// 	`Fetching for ${logInfo}: ${market.inputToken.symbol} from: ${skip} to: ${skip + limit}...`
-				// );
-				result = await fetchFunction(
-					endpoint,
-					market.id,
-					skip,
-					limit,
-					lastTimestamp
-				);
-				if (!result || result.length === 0) {
-					console.log(
-						`No data found for ${market.inputToken.symbol}, endpoint ${endpoint}`
+				// Get the latest timestamp to fetch new data
+				let lastTimestamp = await getLatestTimestamp(filePath, logInfo, symbol);
+
+				// Fetch data in batches using the skip and limit logic
+				while (true) {
+					// Uncomment for detailed fetching logs
+					// console.log(`Fetching for ${logInfo}: ${symbol} from skip: ${skip} to skip + limit: ${skip + limit}...`);
+					result = await fetchFunction(
+						endpoint,
+						market.id,
+						skip,
+						limit,
+						lastTimestamp
 					);
-					break;
-				}
-
-				// Map the results to CSV rows
-				const csvData = result
-					.map((item) => {
-						return `${item.timestamp},${item.totalBorrowBalanceUSD / item.totalDepositBalanceUSD}`;
-					})
-					.join("\n");
-
-				lastTimestamp = parseInt(result[result.length - 1].timestamp);
-
-				// If data exists, mark that data was found
-				if (csvData) {
-					hasData = true;
-
-					// Ensure the directory exists
-					const dirPath = path.dirname(filePath);
-					if (!fs.existsSync(dirPath)) {
-						fs.mkdirSync(dirPath, {recursive: true});
+					if (!result || result.length === 0) {
+						console.log(`No data found for ${symbol}, endpoint ${endpoint}`);
+						break;
 					}
 
-					// Write CSV header if the file doesn't exist
-					if (!fs.existsSync(filePath)) {
-						fs.writeFileSync(filePath, csvHeader);
+					// Map the results to CSV rows
+					const csvData = result
+						.map((item) => {
+							const utilizationRate = item.totalDepositBalanceUSD
+								? item.totalBorrowBalanceUSD / item.totalDepositBalanceUSD
+								: 0;
+							return `${item.timestamp},${utilizationRate}`;
+						})
+						.join("\n");
+
+					lastTimestamp = parseInt(result[result.length - 1].timestamp, 10);
+
+					// If data exists, mark that data was found
+					if (csvData) {
+						hasData = true;
+
+						// Ensure the directory exists
+						const dirPath = path.dirname(filePath);
+						if (!fs.existsSync(dirPath)) {
+							fs.mkdirSync(dirPath, {recursive: true});
+						}
+
+						// Write CSV header if the file doesn't exist
+						if (!fs.existsSync(filePath)) {
+							fs.writeFileSync(filePath, csvHeader);
+						}
+
+						// Append the data to the CSV file
+						fs.appendFileSync(filePath, csvData + "\n");
 					}
 
-					// Append the data to the CSV file
-					fs.appendFileSync(filePath, csvData + "\n");
+					skip += limit;
+
+					if (result.length < limit) {
+						break;
+					}
 				}
 
-				skip += limit;
-
-				if (result.length < limit) {
-					break;
+				if (hasData) {
+					console.log(
+						`Completed fetching data for ${logInfo} ${symbol} in`,
+						((performance.now() - timeStartToken) / 1000).toFixed(2),
+						"seconds"
+					);
+				} else {
+					console.log(
+						`No data saved for ${symbol} as no valid data was found.`
+					);
 				}
-			}
+			})
+		);
 
-			if (hasData) {
-				console.log(
-					`Completed fetching data for ${logInfo} ${market.inputToken.symbol} in`,
-					(performance.now() - timeStartToken) / 1000,
-					"seconds"
-				);
-			} else {
-				console.log(
-					`No data saved for ${market.inputToken.symbol} as no valid data was found.`
-				);
-			}
-		})
-	);
+		// Wait 1 second before processing the next batch to prevent overwhelming the API
+		console.log(
+			`\n\x1b[33mCompleted fetching data for ${logInfo}, waiting 1 second before the next batch...\x1b[0m`
+		);
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
 
 	console.log(
 		`\x1b[32mCompleted fetching data for all ${logInfo} markets in`,
-		(performance.now() - timeStartTotal) / 1000,
-		"seconds"
+		((performance.now() - timeStartTotal) / 1000).toFixed(2),
+		"seconds\x1b[0m"
 	);
 }
 
@@ -705,6 +737,7 @@ async function fetchAndSaveCompoundData({
 			"Obtain a free API key from: https://thegraph.com/ and set it in the .env file"
 		);
 
+	const timestart = performance.now();
 	/// split execution as needed to avoid rate limiting
 	await Promise.all([
 		// aave v2...
@@ -731,4 +764,8 @@ async function fetchAndSaveCompoundData({
 		getRatesForCompoundV3Arbitrum(),
 		getRatesForCompoundV3Polygon(),
 	]);
+
+	console.log(
+		`\n\x1b[32mAll data fetching completed in ${(performance.now() - timestart) / 1000} seconds\x1b[0m`
+	);
 })();
